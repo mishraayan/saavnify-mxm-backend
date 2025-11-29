@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from musicxmatch_api import MusixMatchAPI
+import re
 
 app = FastAPI()
 
@@ -28,16 +29,17 @@ async def get_lyrics(
         artist = (artist or "").strip()
 
         # 1️⃣ Build search queries in order of preference
-        queries = []
+        queries: list[str] = []
 
         if title and artist:
-            queries.append(f"{title} {artist}")  # full
-            # also try only main artist before comma / feat
-            import re
+            # full combination first
+            queries.append(f"{title} {artist}")
 
+            # also try only main artist before comma / & / feat / ft.
             primary_artist = re.split(
                 r",|&|feat\.|ft\.", artist, flags=re.IGNORECASE
             )[0].strip()
+
             if primary_artist and primary_artist.lower() != artist.lower():
                 queries.append(f"{title} {primary_artist}")
 
@@ -50,9 +52,35 @@ async def get_lyrics(
         for q in queries:
             print("🔎 MXM search query:", q)
             search = mxm.search_tracks(q)
-            track_list = search["message"]["body"].get("track_list", [])
-            if track_list:
-                track_id = track_list[0]["track"]["track_id"]
+
+            # 🔍 Normalize result into a track_list
+            track_list = []
+
+            if isinstance(search, dict):
+                # typical musixmatch-style nested dict
+                msg = search.get("message") or {}
+                body = msg.get("body") or {}
+                if isinstance(body, dict):
+                    track_list = body.get("track_list", [])
+                elif isinstance(body, list):
+                    track_list = body
+            elif isinstance(search, list):
+                # library might already return a plain list of tracks
+                track_list = search
+
+            if not track_list:
+                continue
+
+            # Take first element & unwrap "track" if present
+            first = track_list[0]
+            if isinstance(first, dict) and "track" in first:
+                first = first["track"]
+
+            if not isinstance(first, dict):
+                continue
+
+            track_id = first.get("track_id") or first.get("id")
+            if track_id:
                 break
 
         if not track_id:
@@ -60,7 +88,8 @@ async def get_lyrics(
 
         # 3️⃣ Fetch lyrics for that track_id
         res = mxm.get_track_lyrics(track_id=track_id)
-        lyrics_obj = res["message"]["body"].get("lyrics", {})
+        body = res.get("message", {}).get("body", {})
+        lyrics_obj = body.get("lyrics", {})
         lyrics_body = lyrics_obj.get("lyrics_body", "")
 
         if not lyrics_body:
@@ -73,6 +102,7 @@ async def get_lyrics(
         return {"lyrics": cleaned}
 
     except HTTPException:
+        # re-raise the specific HTTP error (400/404 etc.)
         raise
     except Exception as e:
         print("MXM error:", repr(e))
