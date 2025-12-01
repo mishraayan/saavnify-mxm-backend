@@ -4,6 +4,10 @@ from musicxmatch_api import MusixMatchAPI
 import re
 
 app = FastAPI()
+# --- Health Check Endpoint ---
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 app.add_middleware(
     CORSMiddleware,
